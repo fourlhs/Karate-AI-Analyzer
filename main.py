@@ -20,10 +20,10 @@ def main():
     
     # --- 1. SYSTEM INITIALIZATION ---
     print("[INIT] Initializing Computer Vision Subsystems...")
-    # cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(0)
 
-    video_path = "assets/videos/golden_kata_2.mp4"
-    cap = cv2.VideoCapture(video_path)
+    # video_path = "assets/videos/golden_kata_2.mp4"
+    # cap = cv2.VideoCapture(video_path)
     
     if not cap.isOpened():
         print("[CRITICAL] Camera sensor not found. Aborting.")
