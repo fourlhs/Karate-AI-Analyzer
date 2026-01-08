@@ -11,3 +11,7 @@ __pycache__/
 
 # Ignore System files
 .DS_Store
+
+.vscode/
+assets/
+*.mp4

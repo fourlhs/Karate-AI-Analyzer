@@ -1,4 +1,3 @@
-# config.py
 # WKF Rules 2026 - Calibration Constants
 # Generated from Golden Reference Analysis (Stefanos/Georgina Data)
 
@@ -12,7 +11,8 @@ WKF_SPEED_GOOD = 2888.0       # 70% του Golden (Score: 7.0 - 7.9)
 # Zenkutsu Dachi Logic 
 STANCE_ZENKUTSU_KNEE_MIN = 90
 STANCE_ZENKUTSU_KNEE_MAX = 110
-STANCE_PENALTY_FACTOR = 0.3  # Αφαίρεση βαθμών για λάθος στάση
+STANCE_PENALTY_FACTOR = 0.3
+GOLDEN_ZENKUTSU_ANGLE = 98.5
 
 # --- SCORING RULES ---
 BASE_SCORE = 10.0

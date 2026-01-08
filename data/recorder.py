@@ -33,15 +33,6 @@ class DataRecorder:
         self.filename = f"{self.output_folder}/karate_session_{timestamp_str}.csv"
         print(f"[REC] Recording started: {self.filename}")
 
-    def stop(self):
-        """Stops recording and saves to CSV."""
-        if not self.is_recording:
-            return
-            
-        self.is_recording = False
-        self.save_to_csv()
-        print(f"[REC] Recording saved. Total frames: {len(self.buffer)}")
-
     def log(self, metrics):
         """
         Adds a frame of data to the buffer.
@@ -54,10 +45,22 @@ class DataRecorder:
         metrics['timestamp'] = time.time() - self.start_time
         self.buffer.append(metrics)
 
-    def save_to_csv(self):
-        """Flushes buffer to disk."""
+    def stop(self):
+        """Stops recording and triggers the save process."""
+        if not self.is_recording:
+            return None
+            
+        self.is_recording = False
+        return self.save_session()
+
+    def save_session(self):
+        """
+        Flushes buffer to disk and returns the filename for post-analysis.
+        Required for Phase 5 AI Judge integration.
+        """
         if not self.buffer:
-            return
+            print("[WARN] Buffer empty. Nothing to save.")
+            return None
 
         keys = self.buffer[0].keys()
         
@@ -66,5 +69,10 @@ class DataRecorder:
                 dict_writer = csv.DictWriter(output_file, fieldnames=keys)
                 dict_writer.writeheader()
                 dict_writer.writerows(self.buffer)
+            
+            print(f"[REC] Data persisted to: {self.filename} ({len(self.buffer)} frames)")
+            return self.filename
+            
         except Exception as e:
-            print(f"[ERROR] Failed to save CSV: {e}")
+            print(f"[ERROR] Critical I/O Failure during CSV serialization: {e}")
+            return None
