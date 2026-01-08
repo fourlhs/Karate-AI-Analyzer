@@ -125,7 +125,7 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
         # Show Viewport
-        cv2.imshow('Karate AI Coach (Phase 5)', image)
+        cv2.imshow('Karate AI Coach', image)
         
         # --- 3. INPUT HANDLING ---
         key = cv2.waitKey(5) & 0xFF
