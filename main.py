@@ -4,137 +4,192 @@ import sys
 import pandas as pd
 import numpy as np
 from visualize_data import analyze_session
+from sensors.stereo import StereoManager 
 
 # --- CUSTOM MODULES (Architecture Layers) ---
 from sensors.pose_detector import PoseDetector      # Perception Layer
-from analysis.mechanics import MechanicsAnalyzer    # Logic Layer
+from analysis.mechanics import MechanicsAnalyzer    # Logic Layer (Hybrid C++/Python)
 from data.recorder import DataRecorder              # Storage Layer
-from ui.ai_judge import WKF_Judge                      # Evaluation Layer (Phase 5)
+from ui.ai_judge import WKF_Judge                   # Evaluation Layer (Phase 5)
 import config                                       # Global Configuration
 
 def main():
     """
-    Main Execution Pipeline for AI Karate Coach.
-    Orchestrates Sensor Data -> Physics Engine -> Recorder -> AI Judge.
+    Main Execution Pipeline for AI Karate Coach (Phase 7 - Sensor Fusion).
+    Architecture: Dual-Stream Perception with Late Fusion Strategy.
     """
-    
+
     # --- 1. SYSTEM INITIALIZATION ---
-    print("[INIT] Initializing Computer Vision Subsystems...")
-    cap = cv2.VideoCapture(0)
-
-    # video_path = "assets/videos/golden_kata_2.mp4"
-    # cap = cv2.VideoCapture(video_path)
+    print("\n[INIT] 🚀 Booting AI Karate Coach (Phase 7 Engine)...")
+    print("[INIT] Initializing Sensor Array...")
     
-    if not cap.isOpened():
-        print("[CRITICAL] Camera sensor not found. Aborting.")
-        sys.exit()
+    try:
+        # source_a=0 (Laptop Webcam), source_b=1 (Mobile via Iriun/DroidCam)
+        # Αν δεν βρει τη 2η κάμερα, το σύστημα θα τρέξει σε Single Mode αυτόματα.
+        camera_system = StereoManager(source_a=0, source_b=1)
+    except Exception as e:
+        print(f"[CRITICAL ERROR] Camera Init Failed: {e}")
+        return
 
-    # Instantiate core components
-    detector = PoseDetector()       # MediaPipe Wrapper
-    analyzer = MechanicsAnalyzer()  # Physics & Geometry Engine
-    recorder = DataRecorder()       # Telemetry Logger
-    judge = WKF_Judge()             # WKF Rule Engine (Phase 5)
+    # --- DUAL AI ARCHITECTURE ---
+    print("[INIT] Loading Neural Networks & Physics Engines...")
+    
+    # 1. Perception Layer (Independent Detectors to prevent state corruption)
+    detector_main = PoseDetector() 
+    detector_side = PoseDetector()
+
+    # 2. Logic Layer (Independent Physics Engines for correct velocity calculation)
+    # analyzer_main: Υπολογίζει ταχύτητα/ευστάθεια από μπροστά.
+    # analyzer_side: Υπολογίζει ταχύτητα από το πλάι (προφίλ).
+    analyzer_main = MechanicsAnalyzer()
+    analyzer_side = MechanicsAnalyzer()
+
+    # 3. Storage & Evaluation
+    recorder = DataRecorder()
+    judge = WKF_Judge()
 
     # State Variables
     kime_timer = 0
     kime_msg = ""
     
-    print(f"[READY] System Online. WKF Thresholds loaded: Excellent > {config.WKF_SPEED_EXCELLENT} px/s")
-    print("[INSTRUCT] Press 'r' to toggle Recording | Press 'q' to Quit & Score.")
+    print(f"[READY] System Online. Fusion Logic: ACTIVE.")
+    print(f"[READY] WKF Speed Threshold: >{config.WKF_SPEED_EXCELLENT} px/s")
+    print("[INSTRUCT] Press 'r' to toggle Recording | Press 'q' to Quit & Score.\n")
 
     # --- 2. REAL-TIME PROCESSING LOOP ---
-    while cap.isOpened():
-        success, image = cap.read()
-        if not success: continue
-
-        # Mirror view for user interaction (UX)
-        image = cv2.flip(image, 1)
-        h, w, _ = image.shape
+    while True:
+        # A. SENSING (Synchronized Capture)
+        frame_a, frame_b = camera_system.get_dual_frames()
         
-        # A. SENSING (Perception)
-        image = detector.find_pose(image)
-        landmarks = detector.get_landmarks()
+        # Αν χαθεί η κύρια κάμερα, τερματίζουμε
+        if frame_a is None:
+            print("[WARNING] Main Sensor Signal Lost. Shutting down.")
+            break
+
+        # Mirror Main View (Standard UX)
+        image_main = cv2.flip(frame_a, 1)
+        h_main, w_main, _ = image_main.shape
         
-        # Default empty metrics container
-        metrics = {} 
+        # --- B. PERCEPTION & PHYSICS (CORE 1: FRONT) ---
+        image_main = detector_main.find_pose(image_main)
+        landmarks_main = detector_main.get_landmarks()
         
-        if landmarks:
-            # B. PHYSICS ANALYSIS (Logic)
-            # 1. Kinematics (Speed & Acceleration)
-            wrist_3d = detector.get_3d_coordinates(image, 16) # Right Wrist
-            speed, is_kime = analyzer.track_speed_kime(wrist_3d)
-            
-            # 2. Stability (Center of Mass Trajectory)
-            com_x, com_y, stab_status, stab_color, history = analyzer.track_stability(landmarks, w, h)
-            
-            # 3. Geometry (Stance Classification)
-            stance_status, stance_color, ang_l, ang_r = analyzer.track_stance(landmarks)
-            
-            # Kime Event Trigger (Visual Feedback)
-            if is_kime:
-                kime_timer = time.time()
-                kime_msg = "KIME DETECTED!"
+        # Init Variables
+        speed_main = 0
+        is_kime_main = False
+        com_x, com_y = 0, 0
+        stab_status, stab_color = "STABLE", (0, 255, 0)
+        stance_status, stance_color = "NEUTRAL", (200, 200, 200)
+        ang_l, ang_r = 0, 0
 
-            # C. DATA PACKET PREPARATION
-            # Constructing the telemetry frame for storage
-            metrics = {
-                "speed": speed,
-                "is_kime": 1 if is_kime else 0,
-                "com_x": com_x,
-                "com_y": com_y,
-                "stance_status": stance_status,
-                "knee_angle_l": ang_l,
-                "knee_angle_r": ang_r,
-                "stability_status": stab_status
-                # Future: Add raw landmarks for Dynamic Time Warping (DTW)
-            }
+        if landmarks_main:
+            # 1. Kinematics (Front)
+            wrist_3d_main = detector_main.get_3d_coordinates(image_main, 16)
+            speed_main, is_kime_main = analyzer_main.track_speed_kime(wrist_3d_main)
             
-            # D. RECORDING (Storage)
-            if recorder.is_recording:
-                recorder.log(metrics)
-                
-                # Visual Indicator (UI)
-                cv2.circle(image, (w-30, 30), 10, (0, 0, 255), -1) # Recording LED
-                cv2.putText(image, "REC", (w-80, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-
-            # E. AUGMENTED REALITY (Visualization)
-            # Dashboard: Speed
-            cv2.putText(image, f"VELOCITY: {int(speed)} px/s", (w-350, h-30), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            # 2. Stability (Front is best for CoM)
+            com_x, com_y, stab_status, stab_color, _ = analyzer_main.track_stability(landmarks_main, w_main, h_main)
             
-            # Dashboard: Kime Message (Temporary Overlay)
-            if time.time() - kime_timer < 0.5:
-                cv2.putText(image, kime_msg, (w//2 - 150, h//2), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+            # 3. Stance (Front is best for Angles)
+            stance_status, stance_color, ang_l, ang_r = analyzer_main.track_stance(landmarks_main)
 
-            # Dashboard: Stability Core
-            cv2.circle(image, (com_x, com_y), 8, (0, 0, 255), -1)
-            cv2.putText(image, f"CORE: {stab_status}", (20, 50), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, stab_color, 2)
+        # --- C. PERCEPTION & PHYSICS (CORE 2: SIDE) ---
+        speed_side = 0
+        is_kime_side = False
+        image_side_disp = None
+
+        if frame_b is not None:
+            # Mirror Side View (Optional, but keeps consistency)
+            image_side = cv2.flip(frame_b, 1)
             
-            # Dashboard: Stance Classification
-            cv2.putText(image, f"STANCE: {stance_status}", (20, h-30), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, stance_color, 2)
+            # Detect Pose (Full Resolution for Physics)
+            image_side = detector_side.find_pose(image_side) 
+            landmarks_side = detector_side.get_landmarks()
+            
+            if landmarks_side:
+                # 1. Kinematics (Side) - Εδώ πιάνουμε την κίνηση βάθους (Z-axis motion)
+                wrist_3d_side = detector_side.get_3d_coordinates(image_side, 16)
+                speed_side, is_kime_side = analyzer_side.track_speed_kime(wrist_3d_side)
+            
+            # Create Resize Display Image (Optimization)
+            image_side_disp = cv2.resize(image_side, (640, 480))
 
-            # Biometrics: Knee Angles
-            l_knee_pos = detector.get_3d_coordinates(image, 25)
-            r_knee_pos = detector.get_3d_coordinates(image, 26)
-            cv2.putText(image, f"{int(ang_l)}", (int(l_knee_pos[0]), int(l_knee_pos[1])), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(image, f"{int(ang_r)}", (int(r_knee_pos[0]), int(r_knee_pos[1])), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-        # Show Viewport
-        cv2.imshow('Karate AI Coach', image)
+        # --- D. SENSOR FUSION (DECISION LAYER) ---
+        # Logic: "Winner Takes All" -> The camera with the best view of the velocity vector wins.
+        final_speed = max(speed_main, speed_side)
         
-        # --- 3. INPUT HANDLING ---
-        key = cv2.waitKey(5) & 0xFF
+        # Logic: Kime is a global event. If ANY sensor detects snap, it counts.
+        is_kime = is_kime_main or is_kime_side
+
+        if is_kime:
+            kime_timer = time.time()
+            kime_msg = "KIME DETECTED!"
+
+        # --- E. VISUALIZATION (GUI) ---
+        
+        # 1. MAIN WINDOW (Augmented Reality)
+        # Velocity Display (Fused)
+        color_speed = (0, 255, 255) if final_speed == speed_side else (255, 255, 255) # Yellow if Side Cam won
+        cv2.putText(image_main, f"FUSION SPEED: {int(final_speed)} px/s", (w_main-400, h_main-30), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, color_speed, 3)
+        
+        # Debug Data (Sensor Breakdown)
+        cv2.putText(image_main, f"[CAM A: {int(speed_main)} | CAM B: {int(speed_side)}]", (w_main-380, h_main-70), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+        # Kime Flash
+        if time.time() - kime_timer < 0.5:
+            cv2.putText(image_main, kime_msg, (w_main//2 - 150, h_main//2), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+        
+        if landmarks_main:
+            # Stability Core
+            cv2.circle(image_main, (com_x, com_y), 8, (0, 0, 255), -1)
+            cv2.putText(image_main, f"CORE: {stab_status}", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, stab_color, 2)
+            
+            # Stance Info
+            cv2.putText(image_main, f"STANCE: {stance_status}", (20, h_main-30), cv2.FONT_HERSHEY_SIMPLEX, 1, stance_color, 2)
+            
+            # Biometrics (Knees)
+            l_pos = detector_main.get_3d_coordinates(image_main, 25)
+            r_pos = detector_main.get_3d_coordinates(image_main, 26)
+            cv2.putText(image_main, f"{int(ang_l)}", (int(l_pos[0]), int(l_pos[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+            cv2.putText(image_main, f"{int(ang_r)}", (int(r_pos[0]), int(r_pos[1])), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+
+        # 2. SIDE WINDOW (Secondary View)
+        if image_side_disp is not None:
+            # Draw local metrics just for verification
+            cv2.putText(image_side_disp, f"SIDE VELOCITY: {int(speed_side)} px/s", (10, 450), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            cv2.putText(image_side_disp, "SIDE VIEW (Analysis Active)", (10, 30), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            cv2.imshow('Karate AI - Secondary (Side)', image_side_disp)
+
+        # Show Main
+        cv2.imshow('Karate AI - Primary (Front)', image_main)
+
+        # --- F. RECORDING LOGIC ---
+        metrics = {
+            "speed": final_speed,
+            "is_kime": 1 if is_kime else 0,
+            "com_x": com_x, "com_y": com_y,
+            "stance_status": stance_status,
+            "knee_angle_l": ang_l, "knee_angle_r": ang_r,
+            "stability_status": stab_status
+        }
+        
+        if recorder.is_recording:
+            recorder.log(metrics)
+            # Rec Indicator
+            cv2.circle(image_main, (w_main-30, 30), 10, (0, 0, 255), -1)
+            cv2.putText(image_main, "REC", (w_main-80, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+        # --- G. INPUT HANDLING ---
+        key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
-            # Graceful Shutdown
             if recorder.is_recording: recorder.stop()
             break
         elif key == ord('r'):
-            # Toggle Recording State
             if recorder.is_recording:
                 recorder.stop()
                 print("[INFO] Recording Stopped. Data buffered.")
@@ -142,15 +197,16 @@ def main():
                 recorder.start()
                 print("[INFO] Recording Started. Capturing telemetry...")
 
-    # --- 4. POST-PROCESSING & WKF SCORING (The AI Judge) ---
+    # --- 3. CLEANUP & SCORING PROTOCOL ---
+    print("\n[SYSTEM] Shutting down sensors...")
+    camera_system.stop()
+    cv2.destroyAllWindows()
+    
     print("\n" + "="*60)
-    print("          WKF EVALUATION PROTOCOL")
+    print("          WKF EVALUATION PROTOCOL (AI JUDGE)")
     print("="*60)
     
-    cap.release()
-    cv2.destroyAllWindows()
-
-    # Retrieve the last session file
+    # Save & Load Data
     session_file = recorder.save_session()
     
     if session_file:
@@ -163,26 +219,21 @@ def main():
             else:
                 print("[PROCESS] Aggregating performance metrics...")
                 
-                # Metric Aggregation (Heuristic Logic)
-                # 1. Find Max Speed
+                # Metric Aggregation
                 max_speed_session = df['speed'].max()
-                
-                # 2. Check for Kime (Boolean OR across session)
                 kime_achieved = 1 in df['is_kime'].values
                 
-                # 3. Check Stability (Did we ever go UNSTABLE?)
+                # Stability Check
                 stability_fault = "UNSTABLE" in df['stability_status'].values
                 final_stability = "UNSTABLE" if stability_fault else "STABLE"
                 
-                # 4. Average Zenkutsu Angle (Only consider frames where user attempted Zenkutsu)
-                # This prevents "NEUTRAL" standing frames from ruining the average.
+                # Zenkutsu Analysis
                 zenkutsu_frames = df[df['stance_status'].str.contains('ZENKUTSU', na=False)]
-                avg_zenkutsu = 180 # Default
+                avg_zenkutsu = 180 
                 if not zenkutsu_frames.empty:
-                    # We take the bent knee (minimum angle of the two legs)
                     avg_zenkutsu = zenkutsu_frames[['knee_angle_l', 'knee_angle_r']].min(axis=1).mean()
                 
-                # Compile Metrics for the Judge
+                # Summary Construction
                 session_summary = {
                     'max_speed': max_speed_session,
                     'kime_detected': kime_achieved,
@@ -193,7 +244,7 @@ def main():
                 # CALL THE JUDGE
                 verdict = judge.evaluate_performance(session_summary, user_df=df)    
 
-                # REPORT GENERATION
+                # PRINT REPORT
                 print("\n" + "-"*40)
                 print(f" OFFICIAL WKF SCORE: {verdict['score']} / 10.0")
                 print(f" RANKING LEVEL     : {verdict['rank']}")
@@ -202,6 +253,8 @@ def main():
                 for note in verdict['feedback']:
                     print(f" > {note}")
                 print("-" * 40)
+                
+                # SHOW GRAPHS
                 analyze_session(session_file)
                 
         except Exception as e:
