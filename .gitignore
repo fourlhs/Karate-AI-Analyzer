@@ -17,4 +17,3 @@ assets/
 *.mp4
 
 cpp_core/build/
-karate_core.pyd
