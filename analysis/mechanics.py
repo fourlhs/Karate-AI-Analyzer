@@ -1,219 +1,264 @@
 import numpy as np
 import time
 from collections import deque
-import mediapipe as mp
+import sys
+from typing import Tuple, List, Any
+
+# --- ARCHITECTURE: HIGH-PERFORMANCE ENGINE LOADING ---
+# We attempt to import the compiled C++ module ('karate_core').
+# Design Pattern: "Graceful Degradation"
+# - If C++ is found: System runs in "Real-Time Mode" (Phase 6).
+# - If C++ is missing: System falls back to "Legacy Mode" (Python/NumPy).
+
+USING_CPP = False
+try:
+    sys.path.append('.') 
+    import karate_core
+    USING_CPP = True
+    print("\n[SYSTEM] 🚀 HIGH-PERFORMANCE C++ ENGINE LOADED")
+    print("[SYSTEM] Physics & Biomechanics running on bare metal.\n")
+except ImportError as e:
+    print(f"\n[SYSTEM] ⚠️ C++ Engine not found ({e}). Running in LEGACY Python mode.\n")
 
 class MechanicsAnalyzer:
     """
-    Core Physics & Biomechanics Engine.
+    Hybrid Physics Engine Wrapper.
+    
+    Design Pattern: Proxy / Adapter
+    -------------------------------
+    Acts as the interface between the high-level UI (Python/MediaPipe) 
+    and the low-level calculation engine (C++ or Python).
     
     Responsibilities:
-    1. Kinematics Analysis (Velocity, Acceleration, Kime/Impulse detection).
-    2. Statics & Stability (Center of Mass trajectory analysis).
-    3. Posture Classification (Heuristic Decision Tree for WKF Stances).
-    
-    Architecture:
-    - Uses Exponential Moving Average (EMA) for real-time signal smoothing.
-    - Implements vector geometry for joint angle calculation.
+    1. Data Marshaling: Converts MediaPipe landmarks to C++ vectors.
+    2. Execution: Calls the appropriate backend logic.
+    3. State Management: Maintains visual history for UI rendering.
     """
     
     def __init__(self):
-        # --- CONFIGURATION (Phase 4 Calibration) ---
-        # Thresholds derived from Golden Reference Data (pixels/sec)
+        # --- CONFIGURATION (Golden Reference Standards) ---
+        # Thresholds derived from WKF Champion Data
         self.MIN_SPEED_FOR_KIME = 1100.0   
-        self.MIN_ACCEL_FOR_KIME = -9500.0 # High negative acceleration = Snap back
-        
-        # Stability Constraints
-        self.TRAJECTORY_BUFFER = 30       # Frames to track CoM history
-        self.VERTICAL_LIMIT = 40          # Max allowed vertical oscillation (px)
-        
-        # Geometry Constraints (Zenkutsu Dachi)
-        self.STANCE_LOW = 140  # Max angle for flexion (loaded leg)
-        self.STANCE_HIGH = 160 # Min angle for extension (straight leg)
+        self.MIN_ACCEL_FOR_KIME = -9500.0 # Snap-back threshold
+        self.VERTICAL_LIMIT = 40          # Stability tolerance (pixels)
+        self.STABILITY_BUFFER_SIZE = 30   # History length for CoM tracking
 
-        # --- INTERNAL STATE ---
-        self.prev_time = 0
-        self.prev_wrist = np.array([0.0, 0.0, 0.0]) 
-        self.prev_speed = 0
-        self.com_history = deque(maxlen=self.TRAJECTORY_BUFFER)
+        # --- INTERNAL STATE (Visualization) ---
+        # We maintain a deque in Python strictly for UI rendering purposes (drawing the tail).
+        # The C++ engine maintains its own separate deque for mathematical analysis.
+        self.viz_com_history = deque(maxlen=self.STABILITY_BUFFER_SIZE)
 
-    def calculate_angle(self, a, b, c):
-        """
-        Calculates the 2D joint angle at vertex B using arctangent.
-        
-        Args:
-            a, b, c: Coordinates [x, y] of three joints (e.g., Hip, Knee, Ankle).
-        Returns:
-            angle: Degree (0-180).
-        """
-        a, b, c = np.array(a), np.array(b), np.array(c)
-        
-        # Calculate vector angles relative to the X-axis
-        radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
-        angle = np.abs(radians * 180.0 / np.pi)
-        
-        # Normalize to internal angle (0-180)
-        if angle > 180.0:
-            angle = 360 - angle
-            
-        return angle
+        # --- BACKEND INITIALIZATION ---
+        if USING_CPP:
+            # Initialize the C++ Object (Heap allocation via PyBind11)
+            self.cpp_engine = karate_core.KarateEngine()
+        else:
+            # Initialize Legacy Python State
+            print("[INFO] Initializing Legacy Python Mechanics...")
+            self.prev_time = 0
+            self.prev_wrist = np.array([0.0, 0.0, 0.0]) 
+            self.prev_speed = 0
+            # Python logic needs its own deque for stability calculations
+            self.py_com_history = deque(maxlen=self.STABILITY_BUFFER_SIZE)
 
-    def track_speed_kime(self, current_wrist_3d):
+    def calculate_angle(self, a: List[float], b: List[float], c: List[float]) -> float:
         """
-        Real-time Kinematics Analysis.
-        
-        Calculates instantaneous velocity and detects 'Kime' (Focus) events
-        based on rapid deceleration signatures (Snap).
+        Computes the 2D joint angle at vertex B.
+        Used for: Knee Flexion, Elbow Snap, Hip Rotation.
         """
-        curr_time = time.time()
-        dt = curr_time - self.prev_time
+        if USING_CPP:
+            # [FAST PATH] C++ handles vector math instantly
+            return self.cpp_engine.calculate_angle(a, b, c)
+        else:
+            # [SLOW PATH] Python/NumPy Implementation
+            a, b, c = np.array(a), np.array(b), np.array(c)
+            # Calculate angle using arctan2 (robust against quadrant issues)
+            radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
+            angle = np.abs(radians * 180.0 / np.pi)
+            if angle > 180.0: angle = 360 - angle
+            return angle
+
+    def track_speed_kime(self, current_wrist_3d: np.ndarray) -> Tuple[float, bool]:
+        """
+        Kinematics Analysis: Velocity & Impact Detection.
         
-        current_speed = 0
-        is_kime = False
+        Math:
+        v = dx/dt (Velocity)
+        a = dv/dt (Acceleration)
+        Kime = (v > Threshold) AND (a < Negative_Threshold)
         
-        if dt > 0:
-            # 1. Euclidean Distance (Delta Position)
-            distance = np.linalg.norm(current_wrist_3d - self.prev_wrist)
+        Returns: (speed_px_s, is_kime_bool)
+        """
+        x, y, z = current_wrist_3d
+
+        if USING_CPP:
+            # [FAST PATH] Direct call to C++
+            # Passes individual coordinates to avoid overhead of converting full numpy array
+            return self.cpp_engine.track_speed_kime(x, y, z, time.time())
+        
+        else:
+            # [SLOW PATH] Legacy Python Logic
+            curr_time = time.time()
+            if self.prev_time == 0:
+                self.prev_time = curr_time
+                self.prev_wrist = current_wrist_3d
+                return 0.0, False
+
+            dt = curr_time - self.prev_time
+            if dt <= 0.001: return 0.0, False # Prevent division by zero
+
+            # Euclidean distance
+            dist = np.linalg.norm(current_wrist_3d - self.prev_wrist)
+            raw_speed = dist / dt 
             
-            # 2. Instantaneous Velocity (v = d/t)
-            raw_speed = distance / dt 
-            
-            # 3. Signal Smoothing (Exponential Moving Average - EMA)
-            # Reduces sensor jitter while maintaining responsiveness.
+            # EMA Smoothing
             current_speed = 0.7 * self.prev_speed + 0.3 * raw_speed 
-            
-            # Noise Gate
             if current_speed < 50: current_speed = 0
             
-            # 4. Acceleration Calculation (a = dv/dt)
-            acceleration = (current_speed - self.prev_speed) / dt
+            # Acceleration
+            accel = (current_speed - self.prev_speed) / dt
             
-            # 5. Kime Detection Logic (Impulse Analysis)
-            # Kime requires high entry speed AND sudden negative acceleration (braking).
-            if self.prev_speed > self.MIN_SPEED_FOR_KIME and acceleration < self.MIN_ACCEL_FOR_KIME:
+            is_kime = False
+            if self.prev_speed > self.MIN_SPEED_FOR_KIME and accel < self.MIN_ACCEL_FOR_KIME:
                 is_kime = True
             
-            # Update State
             self.prev_speed = current_speed
             self.prev_wrist = current_wrist_3d
             self.prev_time = curr_time
+            return current_speed, is_kime
+
+    def track_stability(self, landmarks, w, h) -> Tuple[int, int, str, Tuple[int, int, int], deque]:
+        """
+        Statics Analysis: Center of Mass (CoM).
+        
+        Calculates the geometric center of the torso and monitors vertical oscillation.
+        Returns: (x, y, status_string, color_tuple, history_deque_for_ui)
+        """
+        
+
+        # Feature Extraction (Needed for both engines)
+        # We manually extract coordinates to pass simple floats/lists to C++
+        l_sh = [landmarks[11].x * w, landmarks[11].y * h]
+        r_sh = [landmarks[12].x * w, landmarks[12].y * h]
+        l_hip = [landmarks[23].x * w, landmarks[23].y * h]
+        r_hip = [landmarks[24].x * w, landmarks[24].y * h]
+
+        if USING_CPP:
+            # [FAST PATH] C++ Logic
+            # C++ calculates CoM and determines stability status internally
+            cx, cy, status, color = self.cpp_engine.track_stability(l_sh, r_sh, l_hip, r_hip)
             
-        return current_speed, is_kime
-
-    def track_stability(self, landmarks, w, h):
-        """
-        Statics Analysis: Center of Mass (CoM) Tracking.
-        
-        Approximates CoM using the geometric center of the torso box 
-        (Shoulders + Hips) and monitors vertical oscillation.
-        """
-        # Feature Extraction: Torso Anchors
-        l_sh = np.array([landmarks[11].x * w, landmarks[11].y * h])
-        r_sh = np.array([landmarks[12].x * w, landmarks[12].y * h])
-        l_hip = np.array([landmarks[23].x * w, landmarks[23].y * h])
-        r_hip = np.array([landmarks[24].x * w, landmarks[24].y * h])
-        
-        # CoM Approximation (Geometric Centroid)
-        com = ((l_sh + r_sh)/2 + (l_hip + r_hip)/2) / 2
-        self.com_history.appendleft(com)
-        
-        status = "STABLE"
-        color = (0, 255, 0)
-        
-        # Stability Logic: Vertical Deviation Check
-        if len(self.com_history) > 10:
-            y_coords = [p[1] for p in self.com_history]
-            vertical_oscillation = max(y_coords) - min(y_coords)
+            # We append to Python deque ONLY for visualization (UI drawing)
+            self.viz_com_history.appendleft((cx, cy))
+            return cx, cy, status, color, self.viz_com_history
             
-            if vertical_oscillation > self.VERTICAL_LIMIT:
-                status = "UNSTABLE"
-                color = (0, 0, 255) # Red warning
-                
-        return int(com[0]), int(com[1]), status, color, self.com_history
-
-    def track_stance(self, landmarks):
-        """
-        Biomechanical Stance Classifier (BSC).
-        
-        This module implements a heuristic-based decision tree to classify 
-        Karate-specific postures by fusing angular kinematics and 
-        spatial distribution of the lower extremities.
-        
-        Methodology:
-        - Angular Analysis: Calculates 2D projection of joint flexions.
-        - Spatial Mapping: Measures Euclidean and axis-aligned distances between anchors.
-        - Alignment Validation: Checks toe-to-heel vectors for rotation-sensitive stances.
-        """
-        
-        # --- 1. Landmark Mapping (Normalization Layer) ---
-        # Hip, Knee, Ankle, and Foot landmarks (MediaPipe Topology)
-        l_hip, r_hip = [landmarks[23].x, landmarks[23].y], [landmarks[24].x, landmarks[24].y]
-        l_knee, r_knee = [landmarks[25].x, landmarks[25].y], [landmarks[26].x, landmarks[26].y]
-        l_ank, r_ank = [landmarks[27].x, landmarks[27].y], [landmarks[28].x, landmarks[28].y]
-        l_foot, r_foot = [landmarks[31].x, landmarks[31].y], [landmarks[32].x, landmarks[32].y]
-
-        # --- 2. Feature Extraction ---
-        # Flexion angles for the sagittal/frontal plane projection
-        angle_l = self.calculate_angle(l_hip, l_knee, l_ank)
-        angle_r = self.calculate_angle(r_hip, r_knee, r_ank)
-        
-        # Longitudinal (Y - Depth) and Lateral (X - Width) base dimensions
-        base_width_x = abs(l_ank[0] - r_ank[0])
-        base_length_y = abs(l_ank[1] - r_ank[1])
-        
-        # Default State
-        status = "NEUTRAL"
-        color = (200, 200, 200)
-
-        # --- 3. Classifier Logic (Heuristic Engine) ---
-
-        # A. ZENKUTSU DACHI (Front Stance)
-        # Logic: Deep stance (Length > Y_Threshold) AND Asymmetric Leg Loading (One bent, one straight)
-        if base_length_y > 0.2 and ((angle_l < 110 and angle_r > 150) or (angle_r < 110 and angle_l > 150)):
-            status = "ZENKUTSU DACHI"
+        else:
+            # [SLOW PATH] Python Logic
+            l_sh_np = np.array(l_sh)
+            r_sh_np = np.array(r_sh)
+            l_hip_np = np.array(l_hip)
+            r_hip_np = np.array(r_hip)
+            
+            com = ((l_sh_np + r_sh_np)/2 + (l_hip_np + r_hip_np)/2) / 2
+            
+            # Use Python-side logic deque
+            self.py_com_history.appendleft(com)
+            self.viz_com_history.appendleft((int(com[0]), int(com[1]))) # Sync viz
+            
+            status = "STABLE"
             color = (0, 255, 0)
+            
+            if len(self.py_com_history) > 10:
+                y_coords = [p[1] for p in self.py_com_history]
+                if max(y_coords) - min(y_coords) > self.VERTICAL_LIMIT:
+                    status = "UNSTABLE"
+                    color = (0, 0, 255)
+            
+            return int(com[0]), int(com[1]), status, color, self.viz_com_history
 
-        # B. KOKUTSU DACHI (Back Stance)
-        # Logic: Weight Shift Posterior (Hip over back leg) AND L-Shape feet
-        elif base_length_y > 0.15:
-            # Check if posterior knee is flexed while anterior is extended
-            if (angle_r < 110 and l_ank[1] < r_ank[1]) or (angle_l < 110 and r_ank[1] < l_ank[1]):
-                status = "KOKUTSU DACHI"
-                color = (255, 0, 255)
+    def track_stance(self, landmarks) -> Tuple[str, Tuple[int, int, int], int, int]:
+        """
+        Biomechanical Classifier: Detects WKF Stances.
+        
+        Uses a Heuristic Decision Tree to classify postures based on:
+        1. Base Dimensions (Width/Length)
+        2. Joint Angles (Knee Flexion)
+        3. Alignment (Toe vectors)
+        
+        Returns: (Stance Name, Color, Left Angle, Right Angle)
+        """
+        # Feature Extraction: Normalize inputs for C++
+        # We pass raw normalized [0-1] coordinates
+        l_hip = [landmarks[23].x, landmarks[23].y]
+        r_hip = [landmarks[24].x, landmarks[24].y]
+        l_knee = [landmarks[25].x, landmarks[25].y]
+        r_knee = [landmarks[26].x, landmarks[26].y]
+        l_ank = [landmarks[27].x, landmarks[27].y]
+        r_ank = [landmarks[28].x, landmarks[28].y]
+        l_foot = [landmarks[31].x, landmarks[31].y]
+        r_foot = [landmarks[32].x, landmarks[32].y]
 
-        # C. KIBA vs SHIKO DACHI (Straddle vs Square Stance)
-        # Logic: Wide Stance (X > Threshold) AND Bilateral Flexion (Both knees bent)
-        # Differentiation: Toe Vector Alignment (External Rotation)
-        elif angle_l < 140 and angle_r < 140 and base_width_x > 0.2:
-            toe_outward_l = abs(l_foot[0] - l_ank[0])
-            if toe_outward_l > 0.05: # External rotation detected
-                status = "SHIKO DACHI"
-            else: # Parallel alignment
-                status = "KIBA DACHI"
-            color = (255, 165, 0)
+        if USING_CPP:
+            # [FAST PATH] C++ Execution
+            # Runs the full Decision Tree in compiled machine code
+            return self.cpp_engine.track_stance(
+                l_hip, r_hip, l_knee, r_knee, l_ank, r_ank, l_foot, r_foot
+            )
+        
+        else:
+            # [SLOW PATH] Legacy Python Fallback
+            # Replicates the exact logic of the C++ engine
+            angle_l = self.calculate_angle(l_hip, l_knee, l_ank)
+            angle_r = self.calculate_angle(r_hip, r_knee, r_ank)
+            
+            base_width_x = abs(l_ank[0] - r_ank[0])
+            base_length_y = abs(l_ank[1] - r_ank[1])
+            
+            status = "NEUTRAL"
+            color = (200, 200, 200)
 
-        # D. NEKO ASHI DACHI (Cat Stance)
-        # Logic: Compressed base (Small Y) AND Unilateral Loading (Rear leg bears 90% weight)
-        elif base_length_y < 0.15 and (angle_l < 100 or angle_r < 100):
-            status = "NEKO ASHI DACHI"
-            color = (0, 255, 255)
+            # A. ZENKUTSU DACHI
+            if base_length_y > 0.2 and ((angle_l < 110 and angle_r > 150) or (angle_r < 110 and angle_l > 150)):
+                status = "ZENKUTSU DACHI"; color = (0, 255, 0)
+            
+            # B. KOKUTSU DACHI
+            elif base_length_y > 0.15 and ((angle_r < 110 and l_ank[1] < r_ank[1]) or (angle_l < 110 and r_ank[1] < l_ank[1])):
+                status = "KOKUTSU DACHI"; color = (255, 0, 255)
+            
+            # C. KIBA vs SHIKO DACHI
+            elif angle_l < 140 and angle_r < 140 and base_width_x > 0.2:
+                toe_outward_l = abs(l_foot[0] - l_ank[0])
+                if toe_outward_l > 0.05:
+                    status = "SHIKO DACHI"
+                else:
+                    status = "KIBA DACHI"
+                color = (255, 165, 0)
 
-        # E. SANCHIN DACHI (Hourglass Stance)
-        # Logic: Compact base AND Internal Adduction (Knees/Toes inward - "Pigeon-toed")
-        elif base_length_y < 0.15 and angle_l < 155 and angle_r < 155:
-            status = "SANCHIN DACHI"
-            color = (0, 128, 255)
+            # D. NEKO ASHI DACHI
+            elif base_length_y < 0.15 and (angle_l < 100 or angle_r < 100):
+                status = "NEKO ASHI DACHI"; color = (0, 255, 255)
 
-        # F. FUDO DACHI (Rooted Stance / Sochin)
-        # Logic: Hybrid of Zenkutsu/Kiba. Wide base with balanced bilateral flexion.
-        elif base_length_y > 0.15 and angle_l < 140 and angle_r < 140:
-            status = "FUDO DACHI"
-            color = (0, 100, 0)
+            # E. SANCHIN DACHI
+            elif base_length_y < 0.15 and angle_l < 155 and angle_r < 155:
+                status = "SANCHIN DACHI"; color = (0, 128, 255)
+            
+            # F. FUDO DACHI
+            elif base_length_y > 0.15 and angle_l < 140 and angle_r < 140:
+                status = "FUDO DACHI"; color = (0, 100, 0)
 
-        # G. KAKE DACHI (Crossed Stance)
-        # Logic: X-Axis Intersection. Ankle position crosses the midline relative to Hips.
-        elif (l_ank[0] > r_ank[0] and l_hip[0] < r_hip[0]) or (r_ank[0] < l_ank[0] and r_hip[0] > l_hip[0]):
-            status = "KAKE DACHI"
-            color = (128, 0, 128)
+            # G. KAKE DACHI
+            elif (l_ank[0] > r_ank[0] and l_hip[0] < r_hip[0]) or (r_ank[0] < l_ank[0] and r_hip[0] > l_hip[0]):
+                status = "KAKE DACHI"; color = (128, 0, 128)
+            
+            return status, color, int(angle_l), int(angle_r)
 
-        return status, color, int(angle_l), int(angle_r)
+    def reset(self):
+        """Resets both engines for a new session."""
+        self.viz_com_history.clear()
+        if USING_CPP:
+            self.cpp_engine.reset()
+        else:
+            self.prev_speed = 0
+            self.prev_time = 0
+            self.prev_wrist = np.array([0.0, 0.0, 0.0])
+            self.py_com_history.clear()
