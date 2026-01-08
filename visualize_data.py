@@ -2,6 +2,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import sys
 import os
+import numpy as np
+from scipy.signal import savgol_filter
 
 """
 Offline Data Visualizer (Science Module)
@@ -18,6 +20,7 @@ def analyze_session(csv_path):
     # 1. Load Data
     try:
         df = pd.read_csv(csv_path)
+        df['speed_smooth'] = savgol_filter(df['speed'], window_length=11, polyorder=3)
     except FileNotFoundError:
         print(f"[ERROR] File not found: {csv_path}")
         return
@@ -53,22 +56,32 @@ def analyze_session(csv_path):
     # (Simplified for now)
 
     # --- PLOT 3: STANCE GEOMETRY (Knees) ---
-    ax3.plot(df['timestamp'], df['knee_angle_l'], label='Left Knee', color='orange', linestyle='--')
-    ax3.plot(df['timestamp'], df['knee_angle_r'], label='Right Knee', color='purple', linestyle='--')
+    df['knee_angle_l_smooth'] = savgol_filter(df['knee_angle_l'], 15, 3)
     
-    # Draw Threshold Lines
-    ax3.axhline(y=140, color='red', linestyle=':', alpha=0.5, label='Max Bent Threshold (140°)')
-    ax3.axhline(y=160, color='green', linestyle=':', alpha=0.5, label='Min Straight Threshold (160°)')
+    ax3.plot(df['timestamp'], df['knee_angle_l_smooth'], label='Left Knee', color='orange')
     
-    ax3.set_title('Geometry: Zenkutsu-dachi Angles')
-    ax3.set_xlabel('Time (seconds)')
-    ax3.set_ylabel('Angle (degrees)')
-    ax3.legend(loc='lower right')
-    ax3.grid(True, linestyle='--', alpha=0.6)
+    ax3.fill_between(df['timestamp'], 90, 110, color='green', alpha=0.2, label='Optimal Zenkutsu Range')
+    
+    ax3.set_title('Stance Quality: Knee Angle Stability')
+    ax3.set_ylabel('Degrees (°)')
+    ax3.set_ylim(40, 180)
 
-    # 3. Show Dashboard
     plt.tight_layout()
     plt.show()
+
+
+    def calculate_angle(a, b, c):
+        a = np.array(a) # Hip
+        b = np.array(b) # Knee
+        c = np.array(c) # Ankle
+    
+        radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
+        angle = np.abs(radians*180.0/np.pi)
+    
+        if angle > 180.0:
+            angle = 360 - angle
+        
+        return angle
 
 if __name__ == "__main__":
     # Usage: python visualize_data.py sessions/karate_session_XXXX.csv

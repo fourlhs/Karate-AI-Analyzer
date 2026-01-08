@@ -1,7 +1,7 @@
 import numpy as np
 import time
 from collections import deque
-import mediapipe as mp # Χρειαζόμαστε τα enums για ευκολία
+import mediapipe as mp
 
 class MechanicsAnalyzer:
     """
@@ -76,35 +76,86 @@ class MechanicsAnalyzer:
 
     def track_stance(self, landmarks):
         """
-        Analyzes legs for Zenkutsu-dachi.
-        Returns: (status_text, color, left_knee_angle, right_knee_angle)
+        Biomechanical Stance Classifier (BSC).
+        
+        This module implements a heuristic-based decision tree to classify 
+        Karate-specific postures by fusing angular kinematics and 
+        spatial distribution of the lower extremities.
+        
+        Methodology:
+        - Angular Analysis: Calculates 2D projection of joint flexions.
+        - Spatial Mapping: Measures Euclidean and axis-aligned distances between anchors.
+        - Alignment Validation: Checks toe-to-heel vectors for rotation-sensitive stances.
         """
-        # Extract points (Normalized coordinates are fine for angles)
-        # Left Leg: Hip(23), Knee(25), Ankle(27)
-        l_hip = [landmarks[23].x, landmarks[23].y]
-        l_knee = [landmarks[25].x, landmarks[25].y]
-        l_ankle = [landmarks[27].x, landmarks[27].y]
         
-        # Right Leg: Hip(24), Knee(26), Ankle(28)
-        r_hip = [landmarks[24].x, landmarks[24].y]
-        r_knee = [landmarks[26].x, landmarks[26].y]
-        r_ankle = [landmarks[28].x, landmarks[28].y]
+        # --- 1. Landmark Mapping (Normalization Layer) ---
+        # Hip, Knee, Ankle, and Foot landmarks (MediaPipe Topology)
+        l_hip, r_hip = [landmarks[23].x, landmarks[23].y], [landmarks[24].x, landmarks[24].y]
+        l_knee, r_knee = [landmarks[25].x, landmarks[25].y], [landmarks[26].x, landmarks[26].y]
+        l_ank, r_ank = [landmarks[27].x, landmarks[27].y], [landmarks[28].x, landmarks[28].y]
+        l_foot, r_foot = [landmarks[31].x, landmarks[31].y], [landmarks[32].x, landmarks[32].y]
+
+        # --- 2. Feature Extraction ---
+        # Flexion angles for the sagittal/frontal plane projection
+        angle_l = self.calculate_angle(l_hip, l_knee, l_ank)
+        angle_r = self.calculate_angle(r_hip, r_knee, r_ank)
         
-        angle_l = self.calculate_angle(l_hip, l_knee, l_ankle)
-        angle_r = self.calculate_angle(r_hip, r_knee, r_ankle)
+        # Longitudinal (Y) and Lateral (X) base width
+        base_width_x = abs(l_ank[0] - r_ank[0])
+        base_length_y = abs(l_ank[1] - r_ank[1])
         
+        # Default State
         status = "NEUTRAL"
         color = (200, 200, 200)
 
-        # Logic: One leg bent (<140), One leg straight (>160)
-        if angle_l < self.STANCE_LOW and angle_r > self.STANCE_HIGH:
-            status = "L ZENKUTSU"
+        # --- 3. Classifier Logic (Heuristic Engine) ---
+
+        # A. ZENKUTSU DACHI (Front Stance)
+        # Condition: Longitudinal extension > threshold AND asymmetric flexion (front leg bent)
+        if base_length_y > 0.2 and ((angle_l < 110 and angle_r > 150) or (angle_r < 110 and angle_l > 150)):
+            status = "ZENKUTSU DACHI"
             color = (0, 255, 0)
-        elif angle_r < self.STANCE_LOW and angle_l > self.STANCE_HIGH:
-            status = "R ZENKUTSU"
-            color = (0, 255, 0)
-        elif angle_r < self.STANCE_LOW and angle_l < self.STANCE_LOW:
-             status = "TOO LOW"
-             color = (0, 0, 255)
+
+        # B. KOKUTSU DACHI (Back Stance)
+        # Condition: Weight distribution on the posterior limb with high base-length ratio
+        elif base_length_y > 0.15:
+            # Check if posterior knee is flexed while anterior is extended
+            if (angle_r < 110 and l_ank[1] < r_ank[1]) or (angle_l < 110 and r_ank[1] < l_ank[1]):
+                status = "KOKUTSU DACHI"
+                color = (255, 0, 255)
+
+        # C. KIBA vs SHIKO DACHI (Straddle vs Square Stance)
+        # Differentiation based on pedal rotation (toe vector alignment)
+        elif angle_l < 140 and angle_r < 140 and base_width_x > 0.2:
+            toe_outward_l = abs(l_foot[0] - l_ank[0])
+            if toe_outward_l > 0.05: # External rotation detected
+                status = "SHIKO DACHI"
+            else: # Parallel alignment
+                status = "KIBA DACHI"
+            color = (255, 165, 0)
+
+        # D. NEKO ASHI DACHI (Cat Stance)
+        # Condition: Short base length with extreme flexion of the weight-bearing limb
+        elif base_length_y < 0.15 and (angle_l < 100 or angle_r < 100):
+            status = "NEKO ASHI DACHI"
+            color = (0, 255, 255)
+
+        # E. SANCHIN DACHI (Hourglass Stance)
+        # Condition: Compact base with internal adduction (pigeon-toed)
+        elif base_length_y < 0.15 and angle_l < 155 and angle_r < 155:
+            status = "SANCHIN DACHI"
+            color = (0, 128, 255)
+
+        # F. FUDO DACHI (Rooted Stance)
+        # Hybrid logic: Balanced double-leg flexion with significant base length
+        elif base_length_y > 0.15 and angle_l < 140 and angle_r < 140:
+            status = "FUDO DACHI"
+            color = (0, 100, 0)
+
+        # G. KAKE DACHI (Crossed Stance)
+        # Intersection test: Check for limb crossing on the X-axis relative to the hips
+        elif (l_ank[0] > r_ank[0] and l_hip[0] < r_hip[0]) or (r_ank[0] < l_ank[0] and r_hip[0] > l_hip[0]):
+            status = "KAKE DACHI"
+            color = (128, 0, 128)
 
         return status, color, int(angle_l), int(angle_r)
