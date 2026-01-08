@@ -22,7 +22,7 @@ def main():
     print("[INIT] Initializing Computer Vision Subsystems...")
     #cap = cv2.VideoCapture(0)
 
-    video_path = "assets/videos/golden_kata_1.mp4"
+    video_path = "assets/videos/golden_kata_2.mp4"
     cap = cv2.VideoCapture(video_path)
     
     if not cap.isOpened():
@@ -191,8 +191,8 @@ def main():
                 }
                 
                 # CALL THE JUDGE
-                verdict = judge.evaluate_performance(session_summary)
-                
+                verdict = judge.evaluate_performance(session_summary, user_df=df)    
+
                 # REPORT GENERATION
                 print("\n" + "-"*40)
                 print(f" OFFICIAL WKF SCORE: {verdict['score']} / 10.0")
