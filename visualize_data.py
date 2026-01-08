@@ -6,14 +6,42 @@ import numpy as np
 from scipy.signal import savgol_filter
 import matplotlib.patches as mpatches
 
+# --- CONFIGURATION ---
+# Path to the "Perfect Form" dataset for comparative overlay
+GOLDEN_REF_PATH = 'data/references/golden_reference_data_1.csv'
+
+def load_golden_reference():
+    """
+    Data Ingestion Utility: Loads the Champion's telemetry.
+    
+    Purpose:
+    Retrieves the Golden Reference dataset to generate the 'Ghost' curve
+    for visual benchmarking. Applies identical DSP filtering to ensure
+    fair comparison with user data.
+    """
+    if os.path.exists(GOLDEN_REF_PATH):
+        try:
+            df = pd.read_csv(GOLDEN_REF_PATH)
+            # Apply DSP (Savitzky-Golay) to match user's signal processing pipeline
+            try:
+                df['speed_smooth'] = savgol_filter(df['speed'], window_length=13, polyorder=3)
+            except:
+                df['speed_smooth'] = df['speed']
+            return df
+        except Exception as e:
+            print(f"[VISUALIZER WARN] Failed to ingest Golden Reference: {e}")
+            return None
+    return None
+
 def analyze_session(csv_path):
     """
     Biomechanical Analytics Module (Post-Processing).
     
-    Generates a multi-dimensional analysis dashboard for Karate performance.
+    Generates a multi-dimensional analysis dashboard for Karate performance,
+    featuring 'Ghost Mode' comparative visualization.
     
     Metrics Analyzed:
-    1. Kinematics: Linear Velocity profile (Wrist).
+    1. Kinematics: Linear Velocity profile vs Golden Reference.
     2. Dynamics: Acceleration/Deceleration profile (Force generation F=ma).
     3. Stability: Center of Mass (CoM) vertical oscillation.
     4. Technique: Joint angle constraints verification (Stance Geometry).
@@ -32,6 +60,9 @@ def analyze_session(csv_path):
         return
 
     print(f"[ANALYTICS] Processing telemetry: {csv_path}")
+
+    # Load Comparative Data (The "Ghost" of the Champion)
+    df_golden = load_golden_reference()
 
     # --- 2. DIGITAL SIGNAL PROCESSING (DSP) LAYER ---
     # We apply Savitzky-Golay filtering to denoise sensor data.
@@ -69,10 +100,17 @@ def analyze_session(csv_path):
 
     frames = df.index
 
-    # --- TRACK 1: KINEMATICS (VELOCITY) ---
-    # Displays the scalar magnitude of velocity over time.
-    ax1.plot(frames, df['speed_smooth'], color='#007acc', linewidth=2, label='Velocity')
-    ax1.set_title('1. KINEMATICS: Velocity Profile', fontsize=12, fontweight='bold')
+    # --- TRACK 1: KINEMATICS (COMPARATIVE VELOCITY) ---
+    # Feature: "Ghost Mode". Plots the Champion's curve in the background.
+    if df_golden is not None:
+        # Align frames visually (cut to match length for cleaner overlay)
+        limit = min(len(df), len(df_golden))
+        ax1.plot(df_golden.index[:limit], df_golden['speed_smooth'][:limit], 
+                 color='gray', linestyle='--', alpha=0.5, linewidth=2, label='Golden Ref (Champion)')
+
+    # Displays the User's scalar magnitude of velocity over time.
+    ax1.plot(frames, df['speed_smooth'], color='#007acc', linewidth=2, label='User Velocity')
+    ax1.set_title('1. KINEMATICS: Velocity Profile vs Champion', fontsize=12, fontweight='bold')
     ax1.set_ylabel('Speed (px/s)')
     ax1.grid(True, alpha=0.3)
     
@@ -80,13 +118,11 @@ def analyze_session(csv_path):
     # Correlates the physics-based detection with the visual timeline.
     kime_pts = df[df['is_kime'] == 1]
     if not kime_pts.empty:
-        ax1.scatter(kime_pts.index, kime_pts['speed_smooth'], color='red', s=80, zorder=5, label='Kime Impact')
+        ax1.scatter(kime_pts.index, kime_pts['speed_smooth'], color='red', s=80, zorder=5, label='User Kime')
     ax1.legend(loc='upper right')
 
     # --- TRACK 2: DYNAMICS (ACCELERATION / FORCE) ---
     # Visualizes the "Explosion" vs "Control" phases.
-    # Positive peak = Initial Impulse (Power generation).
-    # Negative peak = Impact/Snap back (Deceleration phase).
     ax2.plot(frames, df['accel_smooth'], color='#e67e22', linewidth=2, label='Acceleration')
     ax2.axhline(0, color='black', linewidth=1, linestyle='--') # Equilibrium line
     
