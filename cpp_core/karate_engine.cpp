@@ -14,7 +14,7 @@ struct Point3D {
 
 class KarateEngine {
 private:
-    // State variables (όπως το self.prev_wrist)
+    // State variables
     Point3D prev_wrist;
     double prev_time;
     double prev_speed;

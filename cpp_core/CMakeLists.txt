@@ -1,7 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 project(karate_core)
 
-# --- FIX: Χρησιμοποιούμε το επίσημο όνομα "Python" ---
 find_package(Python 3 COMPONENTS Interpreter Development REQUIRED)
 
 # --- Setup Pybind11 ---
