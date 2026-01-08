@@ -1,4 +1,13 @@
 venv/
+
+# Ignore Data & Logs
+sessions/
+*.csv
+*.log
+
+# Ignore Python Cache (Junk files)
 __pycache__/
 *.pyc
+
+# Ignore System files
 .DS_Store
